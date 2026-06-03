@@ -1,0 +1,61 @@
+/**
+ * Escala proporcional (base 8px, ratio 1.25 — major third).
+ * Alineado con convenciones típicas de Stitch / mobile-first.
+ */
+:root {
+  --unit: 8px;
+
+  /* Espaciado */
+  --space-1: calc(var(--unit) * 0.5); /* 4 */
+  --space-2: var(--unit); /* 8 */
+  --space-3: calc(var(--unit) * 1.5); /* 12 */
+  --space-4: calc(var(--unit) * 2); /* 16 */
+  --space-5: calc(var(--unit) * 2.5); /* 20 */
+  --space-6: calc(var(--unit) * 3); /* 24 */
+  --space-8: calc(var(--unit) * 4); /* 32 */
+  --space-10: calc(var(--unit) * 5); /* 40 */
+  --space-12: calc(var(--unit) * 6); /* 48 */
+  --space-16: calc(var(--unit) * 8); /* 64 */
+
+  /* Tipografía (1.25) */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 1.875rem;
+  --text-3xl: 2.25rem;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* Layout */
+  --sidebar-w: 16rem;
+  --content-pad-x: clamp(var(--space-4), 2.5vw, var(--space-8));
+  --content-pad-y: clamp(var(--space-6), 3vh, var(--space-10));
+
+  /* Radios (proporcionales al spacing) */
+  --radius-xs: var(--space-1);
+  --radius-sm: var(--space-2);
+  --radius-md: var(--space-3);
+  --radius-lg: var(--space-4);
+  --radius-xl: var(--space-5);
+  --radius-full: 999px;
+
+  /* Componentes */
+  --crest-sm: 2.25rem;
+  --crest-md: 2.75rem;
+  --crest-lg: clamp(3.5rem, 8vw, 5.5rem);
+  --crest-xl: clamp(4.5rem, 11vw, 7rem);
+  --vs-sm: 1.75rem;
+  --vs-md: 2.25rem;
+  --vs-lg: clamp(2.25rem, 5vw, 3.25rem);
+  --vs-xl: clamp(2.75rem, 6vw, 4rem);
+  --prob-track-h: 0.5rem;
+  --nav-item-h: 2.75rem;
+  --stat-min-h: 5.5rem;
+  --card-pad: var(--space-5);
+  --card-pad-compact: var(--space-4);
+}
