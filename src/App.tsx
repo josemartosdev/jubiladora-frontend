@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { checkApiOnline } from "./api/client";
+import { AppClockProvider } from "./context/AppClockContext";
+import { BetSlipProvider } from "./context/BetSlipContext";
 import { Layout } from "./components/Layout";
+import { BettingPage } from "./pages/BettingPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { ExplorePage } from "./pages/ExplorePage";
 import { HomePage } from "./pages/HomePage";
@@ -28,16 +31,21 @@ export default function App() {
   }, []);
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout online={online} />}>
-          <Route index element={<HomePage />} />
-          <Route path="calendario" element={<CalendarPage />} />
-          <Route path="predicciones" element={<PredictionsPage />} />
-          <Route path="explorar" element={<ExplorePage />} />
-          <Route path="partido/:fixtureId" element={<MatchDetailPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <AppClockProvider>
+      <BetSlipProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route element={<Layout online={online} />}>
+            <Route index element={<HomePage />} />
+            <Route path="apuestas" element={<BettingPage />} />
+            <Route path="calendario" element={<CalendarPage />} />
+            <Route path="predicciones" element={<PredictionsPage />} />
+            <Route path="explorar" element={<ExplorePage />} />
+            <Route path="partido/:fixtureId" element={<MatchDetailPage />} />
+          </Route>
+          </Routes>
+        </BrowserRouter>
+      </BetSlipProvider>
+    </AppClockProvider>
   );
 }

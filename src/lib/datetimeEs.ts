@@ -1,6 +1,19 @@
 const TZ_ES = "Europe/Madrid";
 const LOCALE_ES = "es-ES";
 
+/** Normaliza ISO de Postgres/API (espacio, Z, offset). */
+export function normalizeInstantString(raw: string): string {
+  let s = raw.trim();
+  if (!s) return s;
+  if (/^\d{4}-\d{2}-\d{2} \d/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = `${s}Z`;
+  }
+  return s.replace("Z", "+00:00");
+}
+
 /** Parsea ISO UTC o fecha YYYY-MM-DD. */
 export function parseMatchInstant(iso: string): Date | null {
   if (!iso?.trim()) return null;
@@ -9,8 +22,7 @@ export function parseMatchInstant(iso: string): Date | null {
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
       return new Date(`${s}T12:00:00Z`);
     }
-    const normalized = s.includes("T") ? s.replace("Z", "+00:00") : s;
-    const d = new Date(normalized);
+    const d = new Date(normalizeInstantString(s));
     return Number.isNaN(d.getTime()) ? null : d;
   } catch {
     return null;
@@ -19,9 +31,12 @@ export function parseMatchInstant(iso: string): Date | null {
 
 export function hasClockTime(iso: string, kickoffAt?: string | null): boolean {
   const raw = kickoffAt?.trim() || iso?.trim() || "";
-  return raw.includes("T") && !/T12:00:00/.test(raw);
+  if (!raw) return false;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  return /[T ]\d{1,2}:\d{2}/.test(raw) && !/T12:00:00/.test(raw);
 }
 
+/** Hora del partido en península (Europe/Madrid). Ej: «18:45». */
 export function formatKickoffTimeEs(
   iso: string,
   kickoffAt?: string | null,
@@ -66,7 +81,7 @@ export function formatMatchDateShortEs(
   });
 }
 
-/** Ej: «viernes, 13 de junio de 2026 · 21:00 (hora España)» */
+/** Ej: «viernes, 13 de junio de 2026 · 21:00» */
 export function formatMatchScheduleEs(
   iso: string,
   kickoffAt?: string | null,
@@ -74,7 +89,7 @@ export function formatMatchScheduleEs(
   const datePart = formatMatchDateEs(iso, kickoffAt);
   const timePart = formatKickoffTimeEs(iso, kickoffAt);
   if (timePart) {
-    return `${datePart} · ${timePart} (hora España)`;
+    return `${datePart} · ${timePart}`;
   }
   return datePart;
 }

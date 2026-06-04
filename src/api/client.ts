@@ -43,10 +43,24 @@ export type ForecastDay = {
   items: Prediction[];
 };
 
+export type CalendarSync = {
+  auto_sync_enabled: boolean;
+  interval_seconds: number;
+  live_interval_seconds: number;
+  last_sync_at: string | null;
+  next_sync_at: string | null;
+  stale: boolean;
+  in_progress: boolean;
+  last_error: string | null;
+  credentials_ok: boolean;
+};
+
 export type ForecastResponse = {
   status: string;
   mode: string;
   days: number;
+  app_clock?: AppClock;
+  today_match_count?: number;
   count: number;
   count_with_prediction: number;
   pick: Prediction | null;
@@ -54,9 +68,21 @@ export type ForecastResponse = {
   by_day: ForecastDay[];
   message?: string | null;
   api_hint?: string | null;
+  calendar_sync?: CalendarSync;
+};
+
+export type AppClock = {
+  timezone: string;
+  now_iso: string;
+  today_iso: string;
+  date_label_es: string;
+  time_label_es: string;
+  datetime_label_es: string;
+  is_fixed?: boolean;
 };
 
 export type Overview = {
+  app_clock?: AppClock;
   teams: number;
   matches: number;
   elo_ratings: number;
@@ -173,12 +199,18 @@ async function fetchJsonOnce<T>(
   path: string,
   timeoutMs: number,
   method: "GET" | "POST" = "GET",
+  body?: unknown,
 ): Promise<T> {
   const url = `${base}${path}`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctrl.signal, method });
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      method,
+      headers: body != null ? { "Content-Type": "application/json" } : undefined,
+      body: body != null ? JSON.stringify(body) : undefined,
+    });
     const text = await res.text();
     if (!res.ok) {
       let detail = `${res.status} ${path}`;
@@ -215,12 +247,14 @@ async function fetchJson<T>(
   path: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   method: "GET" | "POST" = "GET",
+  body?: unknown,
 ): Promise<T> {
-  const bases = API_URL ? [API_URL, API_FALLBACK] : [API_FALLBACK, ""];
+  // En dev sin VITE_API_URL: proxy Vite primero (evita CORS localhost -> 127.0.0.1).
+  const bases = API_URL ? [API_URL, API_FALLBACK] : ["", API_FALLBACK];
   let lastErr: Error | null = null;
   for (const base of bases) {
     try {
-      return await fetchJsonOnce<T>(base, path, timeoutMs, method);
+      return await fetchJsonOnce<T>(base, path, timeoutMs, method, body);
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
       if (base === bases[bases.length - 1]) break;
@@ -247,6 +281,22 @@ export async function checkApiOnline(): Promise<boolean> {
 
 export async function getOverview() {
   return fetchJson<Overview>("/api/v1/stats/overview", 15_000);
+}
+
+export async function getAppClock(): Promise<AppClock> {
+  const res = await fetchJson<{ status: string } & AppClock>(
+    "/api/v1/meta/app-clock",
+    10_000,
+  );
+  return {
+    timezone: res.timezone,
+    now_iso: res.now_iso,
+    today_iso: res.today_iso,
+    date_label_es: res.date_label_es,
+    time_label_es: res.time_label_es,
+    datetime_label_es: res.datetime_label_es,
+    is_fixed: res.is_fixed,
+  };
 }
 
 export async function getFuturePickOfDay() {
@@ -290,6 +340,9 @@ export async function loadHomePredictions(days = 3): Promise<{
   message: string | null;
   countWithPrediction: number;
   apiHint: string | null;
+  appClock: AppClock | null;
+  todayMatchCount: number;
+  calendarSync: CalendarSync | null;
 }> {
   const res = await getHomePredictions(days, false);
   const pick =
@@ -308,6 +361,9 @@ export async function loadHomePredictions(days = 3): Promise<{
     message: res.message ?? null,
     countWithPrediction: res.count_with_prediction ?? 0,
     apiHint: res.api_hint ?? null,
+    appClock: res.app_clock ?? null,
+    todayMatchCount: res.today_match_count ?? 0,
+    calendarSync: res.calendar_sync ?? null,
   };
 }
 
@@ -332,6 +388,48 @@ export async function searchMatchesByTeams(params: {
   return fetchJson<{ count: number; items: Prediction[]; hint?: string }>(
     `/api/v1/matches/search?${q}`,
     30_000,
+  );
+}
+
+export type OddsSyncResponse = {
+  status: string;
+  mode?: string;
+  sport_keys?: string[];
+  fixtures_fetched?: number;
+  inserted?: number;
+  updated?: number;
+  skipped?: number;
+  odds_rows?: number;
+  finished_with_score?: number;
+  api_calls_estimate?: number;
+  hints?: string[];
+  days_from?: number | null;
+};
+
+export async function getOddsSports() {
+  return fetchJson<{
+    status: string;
+    configured_keys: string[];
+    active_target_keys: string[];
+    soccer_sports_sample: { key: string; title: string; active?: boolean }[];
+  }>("/api/v1/calendar/odds/sports");
+}
+
+export async function postOddsInitialLoad() {
+  return fetchJson<OddsSyncResponse>(
+    "/api/v1/calendar/odds/initial-load",
+    DEFAULT_TIMEOUT_MS,
+    "POST",
+  );
+}
+
+export async function postOddsUpdateResults(daysFrom?: number) {
+  const q =
+    daysFrom != null ? `?days_from=${encodeURIComponent(String(daysFrom))}` : "";
+  return fetchJson<OddsSyncResponse>(
+    `/api/v1/calendar/odds/update-results${q}`,
+    60_000,
+    "POST",
   );
 }
 
@@ -590,6 +688,272 @@ export type MatchDetail = {
 
 export async function getMatchDetail(fixtureId: number) {
   return fetchJson<MatchDetail>(`/api/v1/matches/detail?fixture_id=${fixtureId}`);
+}
+
+export type BettingSelection = {
+  selection_id: string;
+  category: string;
+  market: string;
+  selection: string;
+  model_probability: number;
+  decimal_odds: number;
+  recommended?: boolean;
+  tier?: string;
+  team?: string;
+  player?: string;
+  scope?: string;
+};
+
+export type BettingDailyPick = BettingSelection & {
+  match_id: number;
+  home_team: string;
+  away_team: string;
+  date?: string;
+  kickoff_at?: string | null;
+};
+
+export type BettingDayMatch = {
+  match_id: number;
+  home_team: string;
+  away_team: string;
+  date?: string;
+  kickoff_at?: string | null;
+  tournament?: string | null;
+  round?: string | null;
+  confidence?: number;
+  has_prediction?: boolean;
+  selections_count: number;
+};
+
+export type BettingDailyDay = {
+  date: string;
+  label: string;
+  match_count?: number;
+  matches: BettingDayMatch[];
+  picks: BettingDailyPick[];
+};
+
+export type InterestingMatchResponse = {
+  status: string;
+  message?: string;
+  match_id?: number;
+  home_team?: string;
+  away_team?: string;
+  date?: string;
+  kickoff_at?: string | null;
+  tournament?: string | null;
+  round?: string | null;
+  confidence?: number;
+  confidence_pct?: number;
+  pick?: string;
+  pick_label?: string;
+  probabilities?: Probabilities;
+  inference_mode?: string;
+  reason?: string;
+};
+
+export async function getInterestingMatch(days = 7) {
+  return fetchJson<InterestingMatchResponse>(
+    `/api/v1/betting/interesting-match?days=${days}`,
+    30_000,
+  );
+}
+
+export type BettingDailyResponse = {
+  status: string;
+  disclaimer: string;
+  virtual_currency: string;
+  days: number;
+  app_clock?: AppClock;
+  today_match_count?: number;
+  by_day: BettingDailyDay[];
+  top_picks: BettingDailyPick[];
+};
+
+export type BettingMatchMarketsResponse = {
+  status: string;
+  disclaimer?: string;
+  match_id: number;
+  home_team: string;
+  away_team: string;
+  tournament: string | null;
+  round: string | null;
+  date: string;
+  kickoff_at?: string | null;
+  local_date: string;
+  selections: BettingSelection[];
+  by_category: Record<string, BettingSelection[]>;
+  recommended: BettingSelection[];
+};
+
+export type SlipLegIn = {
+  match_id: number;
+  selection_id: string;
+  market: string;
+  selection: string;
+  category?: string;
+  model_probability?: number;
+  decimal_odds?: number;
+  scope?: string;
+};
+
+export type BettingMatchComboResponse = {
+  status: string;
+  message?: string;
+  match_id: number;
+  home_team: string;
+  away_team: string;
+  legs: BettingDailyPick[];
+  legs_by_category: Record<string, BettingDailyPick[]>;
+  legs_count: number;
+  combined_probability?: number;
+  combined_probability_pct?: number;
+  combined_odds?: number;
+  rationale?: string;
+};
+
+export type BettingOutrightsResponse = {
+  status: string;
+  message?: string;
+  tournament?: string;
+  teams_considered?: number;
+  selections: BettingSelection[];
+  by_category: Record<string, BettingSelection[]>;
+  disclaimer?: string;
+};
+
+export async function getBettingOutrights() {
+  return fetchJson<BettingOutrightsResponse>("/api/v1/betting/outrights", 60_000);
+}
+
+export async function getBettingMatchBestCombo(matchId: number, maxLegs = 8) {
+  return fetchJson<BettingMatchComboResponse>(
+    `/api/v1/betting/match/${matchId}/best-combo?max_legs=${maxLegs}`,
+    90_000,
+  );
+}
+
+export type SlipEvaluationLeg = {
+  status: string;
+  match_id?: number;
+  match_label?: string;
+  category?: string;
+  market?: string;
+  selection?: string;
+  selection_id?: string;
+  model_probability?: number;
+  probability_pct?: number;
+  decimal_odds?: number;
+  edge?: number;
+  message?: string;
+  stake?: number;
+  potential_win?: number;
+  potential_profit?: number;
+  potential_loss?: number;
+};
+
+export type SlipEvaluation = {
+  status: string;
+  message?: string;
+  mode?: string;
+  stake?: number;
+  stake_total?: number;
+  legs_count?: number;
+  combined_probability?: number | null;
+  combined_probability_pct?: number;
+  combined_odds?: number | null;
+  potential_win?: number;
+  potential_profit?: number;
+  potential_loss?: number;
+  expected_value?: number;
+  verdict?: string;
+  legs: SlipEvaluationLeg[];
+  disclaimer?: string;
+};
+
+export async function getBettingDaily(days = 7) {
+  return fetchJson<BettingDailyResponse>(
+    `/api/v1/betting/daily?days=${days}`,
+    120_000,
+  );
+}
+
+export type BettingPickOfDayResponse = {
+  status: string;
+  message?: string;
+  type?: "combo" | "single";
+  pick?: BettingDailyPick;
+  legs?: BettingDailyPick[];
+  legs_count?: number;
+  combined_probability?: number;
+  combined_probability_pct?: number;
+  combined_odds?: number;
+  rationale?: string;
+  score?: number;
+  disclaimer?: string;
+};
+
+export async function getBettingPickOfDay(days = 5) {
+  return fetchJson<BettingPickOfDayResponse>(
+    `/api/v1/betting/pick-of-the-day?days=${days}`,
+    120_000,
+  );
+}
+
+export type BettingSafeComboResponse = {
+  status: string;
+  message?: string;
+  type?: "multi_match" | "same_match" | "single_safe";
+  date?: string;
+  min_probability?: number;
+  min_probability_pct?: number;
+  matches_today?: number;
+  matches_in_combo?: number;
+  skipped_matches?: Array<{
+    match_id: number;
+    label: string;
+    reason: string;
+    best_probability_pct?: number | null;
+  }>;
+  legs?: BettingDailyPick[];
+  legs_by_category?: Record<string, BettingDailyPick[]>;
+  legs_count?: number;
+  combined_probability?: number;
+  combined_probability_pct?: number;
+  combined_odds?: number;
+  expected_return_multiplier?: number;
+  rationale?: string;
+  disclaimer?: string;
+};
+
+export async function getBettingSafeCombo(
+  minProbability = 0.60,
+  maxLegs = 12,
+) {
+  return fetchJson<BettingSafeComboResponse>(
+    `/api/v1/betting/safe-combo?min_probability=${minProbability}&max_legs=${maxLegs}`,
+    120_000,
+  );
+}
+
+export async function getBettingMatchMarkets(matchId: number) {
+  return fetchJson<BettingMatchMarketsResponse>(
+    `/api/v1/betting/match/${matchId}`,
+    90_000,
+  );
+}
+
+export async function evaluateBettingSlip(body: {
+  stake: number;
+  mode: "accumulator" | "single" | "singles";
+  legs: SlipLegIn[];
+}) {
+  return fetchJson<SlipEvaluation>(
+    "/api/v1/betting/evaluate",
+    90_000,
+    "POST",
+    body,
+  );
 }
 
 export { API_URL, API_FALLBACK };

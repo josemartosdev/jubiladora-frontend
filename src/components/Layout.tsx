@@ -1,14 +1,18 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { API_URL } from "../api/client";
+import { useAppClock } from "../context/AppClockContext";
 
 const links = [
   { to: "/", label: "Inicio", icon: "⌂" },
+  { to: "/apuestas", label: "Apuestas", icon: "€" },
   { to: "/calendario", label: "Calendario", icon: "📅" },
   { to: "/predicciones", label: "Predicciones", icon: "◎" },
   { to: "/explorar", label: "Buscar selecciones", icon: "🔍" },
 ];
 
 export function Layout({ online }: { online: boolean | null }) {
+  const { displayLabel, todayIso } = useAppClock();
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -49,6 +53,11 @@ export function Layout({ online }: { online: boolean | null }) {
         </div>
       </aside>
       <main className="main">
+        <div className="dashboard-clock" role="status" aria-live="polite">
+          <span className="dashboard-clock-label">Referencia Jubiladora</span>
+          <strong>{displayLabel}</strong>
+          <span className="dashboard-clock-today muted small">Hoy: {todayIso}</span>
+        </div>
         <Outlet />
       </main>
     </div>

@@ -19,6 +19,12 @@ const PICK_LABEL: Record<string, string> = {
   away: "Victoria visitante",
 };
 
+const STATUS_LABEL: Record<string, string> = {
+  live: "En directo",
+  scheduled: "Programado",
+  finished: "Finalizado",
+};
+
 function teamInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) {
@@ -68,6 +74,8 @@ export function MatchCard({
   const confPct = Math.round(p.confidence * 100);
   const kickoff = formatKickoffTimeEs(p.date, p.kickoff_at);
   const dateLabel = formatMatchDateShortEs(p.date, p.kickoff_at);
+  const isLive = p.status === "live";
+  const statusLabel = STATUS_LABEL[p.status] ?? p.status;
 
   const correct =
     p.has_result &&
@@ -80,9 +88,29 @@ export function MatchCard({
     "match-card",
     compact ? "compact" : "",
     featured ? "featured" : "",
+    isLive ? "is-live" : "",
   ]
     .filter(Boolean)
     .join(" ");
+
+  const vsCenter = (
+    <div className="vs-stack" aria-label={kickoff ? `Hora ${kickoff}` : undefined}>
+      {kickoff ? (
+        <span
+          className="match-hour-badge"
+          title="Hora en España (península)"
+        >
+          {kickoff}
+        </span>
+      ) : null}
+      <span className={`vs-label ${isLive ? "live" : ""}`}>
+        {isLive ? "LIVE" : "VS"}
+      </span>
+      {compact && !kickoff && (
+        <span className="match-hour-badge muted-hour">—:—</span>
+      )}
+    </div>
+  );
 
   return (
     <article className={cardClass}>
@@ -90,8 +118,11 @@ export function MatchCard({
         <div>
           <time className="match-card-time">
             {dateLabel}
-            {kickoff && <span className="match-card-kickoff">{kickoff} (ES)</span>}
-            {p.is_future && <span className="future-tag">FUTURO</span>}
+            {!compact && kickoff && (
+              <span className="match-card-kickoff">{kickoff}</span>
+            )}
+            {isLive && <span className="live-tag">EN DIRECTO</span>}
+            {p.is_future && !isLive && <span className="future-tag">FUTURO</span>}
           </time>
           <div className="match-teams-row">
             <div className="team-block home">
@@ -100,7 +131,7 @@ export function MatchCard({
               </span>
               <span className="team-name">{p.home_team}</span>
             </div>
-            <span className="vs-badge">VS</span>
+            {vsCenter}
             <div className="team-block away">
               <span className="team-crest" aria-hidden>
                 {teamInitials(p.away_team)}
@@ -109,6 +140,12 @@ export function MatchCard({
             </div>
           </div>
           {p.tournament && <p className="tournament">{p.tournament}</p>}
+          {compact && (
+            <p className="match-card-status muted small">
+              {statusLabel}
+              {kickoff ? ` · ${kickoff}` : ""}
+            </p>
+          )}
         </div>
         {hasPrediction ? (
           <div className="pick-badge">
@@ -125,9 +162,7 @@ export function MatchCard({
             )}
             <small>Pick modelo</small>
             <strong>{pickLabel}</strong>
-            {!featured && (
-              <span>{confPct}% conf.</span>
-            )}
+            {!featured && <span>{confPct}% conf.</span>}
             {modeLabel && <span className="mode-tag">{modeLabel}</span>}
           </div>
         ) : (

@@ -96,8 +96,8 @@ export function MatchDetailPage() {
         <div className="match-detail-hero-top">
           <span className="page-badge">Ficha pro</span>
           {kickoff && (
-            <span className="match-kickoff-badge" title="Horario de Espana (peninsula)">
-              {kickoff} · hora España
+            <span className="match-kickoff-badge" title="Hora en España (península)">
+              {kickoff}
             </span>
           )}
         </div>
