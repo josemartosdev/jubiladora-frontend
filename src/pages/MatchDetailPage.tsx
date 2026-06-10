@@ -1,47 +1,42 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getMatchDetail, type MatchDetail } from "../api/client";
-import { MatchLineups } from "../components/MatchLineups";
-import { MatchLiveBar } from "../components/MatchLiveBar";
+import { ErrorAlert } from "../components/ErrorAlert";
 import { MatchPlayerOutlook } from "../components/MatchPlayerOutlook";
-import { MatchProAnalysis } from "../components/MatchProAnalysis";
 import { ProbBars } from "../components/ProbBars";
 import {
   formatKickoffTimeEs,
-  formatMatchDateShortEs,
   formatMatchScheduleEs,
 } from "../lib/datetimeEs";
 
-function teamInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) {
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  }
-  return name.slice(0, 3).toUpperCase();
-}
+const PICK_LABEL: Record<string, string> = {
+  home: "Victoria local",
+  draw: "Empate",
+  away: "Victoria visitante",
+};
 
 export function MatchDetailPage() {
   const { fixtureId } = useParams<{ fixtureId: string }>();
   const [data, setData] = useState<MatchDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadDetail = useCallback(async (silent = false) => {
+  const loadDetail = useCallback(async () => {
     const id = Number(fixtureId);
     if (!id) {
-      setError("ID de partido invalido");
+      setError("ID inválido");
       setLoading(false);
       return;
     }
-    if (!silent) setLoading(true);
+    setLoading(true);
     try {
       setData(await getMatchDetail(id));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error");
-      if (!silent) setData(null);
+      setError(e);
+      setData(null);
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
   }, [fixtureId]);
 
@@ -49,103 +44,98 @@ export function MatchDetailPage() {
     loadDetail();
   }, [loadDetail]);
 
-  useEffect(() => {
-    if (!data?.live_feed?.is_live) return;
-    const id = setInterval(() => loadDetail(true), 45_000);
-    return () => clearInterval(id);
-  }, [data?.live_feed?.is_live, loadDetail]);
-
   if (loading) {
-    return (
-      <p className="muted page loading-dots">Cargando analisis completo</p>
-    );
+    return <p className="muted loading-dots">Cargando partido</p>;
   }
   if (error || !data || data.status !== "ok") {
     return (
       <div className="page">
-        <Link to="/">← Volver</Link>
-        <div className="alert">{error ?? "Partido no encontrado"}</div>
+        <nav className="match-detail-nav">
+          <Link to="/">← Mundial</Link>
+          {" · "}
+          <Link to="/calendario">Calendario</Link>
+        </nav>
+        {error ? (
+          <ErrorAlert error={error} />
+        ) : (
+          <div className="alert">Partido no encontrado</div>
+        )}
+        <div className="card empty-state">
+          <p className="muted small">
+            ID solicitado: {fixtureId}. Si el calendario muestra el partido pero la ficha falla,
+            revisa Configuración o los logs del backend en <code>/matches/detail</code>.
+          </p>
+        </div>
       </div>
     );
   }
 
+  const m = data.match;
   const pred = data.prediction;
   const pro = data.pro_analysis;
-  const m = data.match;
   const kickoff = formatKickoffTimeEs(m.date, m.kickoff_at);
-  const scheduleLine = formatMatchScheduleEs(m.date, m.kickoff_at);
-
-  const modeLabel =
-    pred?.inference_mode === "ml_elo"
-      ? "Modelo ML + Elo"
-      : pred?.inference_mode === "db_h2h"
-        ? "Base de datos (forma + H2H)"
-        : pred?.inference_mode === "db_form"
-          ? "Base de datos (forma)"
-          : pred?.inference_mode === "db_prior"
-            ? "Prior internacional (poca historia)"
-            : null;
+  const live = data.live_feed;
 
   return (
     <div className="page match-detail">
       <nav className="match-detail-nav">
-        <Link to="/">← Volver al inicio</Link>
+        <Link to="/">← Mundial</Link>
+        {" · "}
+        <Link to="/apuestas">Apuestas →</Link>
       </nav>
 
-      <header className="match-detail-hero card">
-        <div className="match-detail-hero-top">
-          <span className="page-badge">Ficha pro</span>
-          {kickoff && (
-            <span className="match-kickoff-badge" title="Hora en España (península)">
-              {kickoff}
-            </span>
-          )}
-        </div>
+      <header className="page-hero">
+        <span className="wc-badge">{m.tournament ?? "Partido"}</span>
         <h1>
-          {m.home_team} <span className="match-title-vs">vs</span> {m.away_team}
+          {m.home_team} <span className="featured-vs">vs</span> {m.away_team}
         </h1>
-        <p className="match-schedule-line">{scheduleLine}</p>
-        <p className="match-meta-line muted small">
-          {m.tournament}
+        <p className="muted small">
+          {formatMatchScheduleEs(m.date, m.kickoff_at)}
+          {kickoff && ` · ${kickoff} (España)`}
           {m.round && ` · ${m.round.replaceAll("|", " · ")}`}
-          {modeLabel && (
-            <>
-              {" "}
-              · <span className="mode-tag">{modeLabel}</span>
-            </>
-          )}
         </p>
-
-        <div className="match-spotlight match-spotlight-inline">
-          <div className="team-block home">
-            <span className="team-crest">{teamInitials(m.home_team)}</span>
-            <span className="team-name">{m.home_team}</span>
-          </div>
-          <span className="vs-badge">VS</span>
-          <div className="team-block away">
-            <span className="team-crest">{teamInitials(m.away_team)}</span>
-            <span className="team-name">{m.away_team}</span>
-          </div>
-        </div>
+        {live?.has_score && live.score && (
+          <p style={{ fontSize: "1.5rem", fontWeight: 700, color: "var(--gold)" }}>
+            {live.score.home} – {live.score.away}
+            {live.is_live && <span className="muted small"> EN DIRECTO</span>}
+          </p>
+        )}
       </header>
 
-      {data.live_feed && <MatchLiveBar live={data.live_feed} />}
-
-      <div className="match-detail-body">
-        <div className="match-detail-main">
-          {data.lineups &&
-            (data.lineups.home.starters.length > 0 ||
-              data.lineups.away.starters.length > 0) && (
-              <MatchLineups lineups={data.lineups} />
-            )}
+      <div className="detail-grid">
+        <div>
+          {pred && (
+            <section className="card">
+              <h2 style={{ margin: "0 0 0.75rem", fontSize: "1rem" }}>
+                Pronóstico 1X2
+              </h2>
+              <p>
+                Pick:{" "}
+                <span className="pick-chip">
+                  {PICK_LABEL[pred.pick] ?? pred.pick}
+                </span>
+                <span className="muted small">
+                  {" "}
+                  · {Math.round(pred.confidence * 100)}% confianza
+                </span>
+              </p>
+              <ProbBars probs={pred.probabilities} highlight={pred.pick} />
+            </section>
+          )}
 
           {pro && (
-            <section className="card pro-hero">
-              <h2 className="section-title">Resumen del modelo</h2>
-              <div className="kpi-grid match-kpi-grid">
-                <div className="kpi accent">
-                  <span>Goles esperados</span>
-                  <strong>{pro.simulation.expected_total_goals}</strong>
+            <section className="card" style={{ marginTop: "1rem" }}>
+              <h2 style={{ margin: "0 0 0.75rem", fontSize: "1rem" }}>
+                Simulación Poisson
+              </h2>
+              <div className="kpi-row">
+                <div className="kpi">
+                  <span>Goles local</span>
+                  <strong>{pro.simulation.expected_home_goals}</strong>
+                </div>
+                <div className="kpi">
+                  <span>Goles visit.</span>
+                  <strong>{pro.simulation.expected_away_goals}</strong>
                 </div>
                 <div className="kpi">
                   <span>Over 2.5</span>
@@ -159,123 +149,84 @@ export function MatchDetailPage() {
                     {(pro.simulation.markets.btts_yes * 100).toFixed(0)}%
                   </strong>
                 </div>
-                <div className="kpi">
-                  <span>Apuestas modelo</span>
-                  <strong>{pro.all_bets.length}</strong>
-                </div>
-                <div className="kpi">
-                  <span>xG local</span>
-                  <strong>{pro.simulation.expected_home_goals}</strong>
-                </div>
-                <div className="kpi">
-                  <span>xG visitante</span>
-                  <strong>{pro.simulation.expected_away_goals}</strong>
-                </div>
               </div>
+              {pro.narrative?.[0] && (
+                <p className="muted small">{pro.narrative[0].body}</p>
+              )}
             </section>
           )}
 
           {data.player_outlook && (
-            <MatchPlayerOutlook outlook={data.player_outlook} />
-          )}
-
-          {pro ? (
-            <section className="card match-analysis-card">
-              <h2 className="section-title">Centro de analisis</h2>
-              <MatchProAnalysis
-                analysis={pro}
-                probs1x2={pred?.probabilities}
-              />
+            <section className="card" style={{ marginTop: "1rem" }}>
+              <h2 style={{ margin: "0 0 0.75rem", fontSize: "1rem" }}>
+                Jugadores — plantilla 2025-26
+              </h2>
+              <MatchPlayerOutlook outlook={data.player_outlook} />
             </section>
-          ) : (
-            pred?.has_prediction !== false &&
-            pred && (
-              <section className="card">
-                <h2 className="section-title">Prediccion 1X2</h2>
-                <ProbBars probs={pred.probabilities} highlight={pred.pick} />
-                <p className="muted">
-                  Elo {Math.round(pred.home_elo ?? 0)} — {Math.round(pred.away_elo ?? 0)}
-                </p>
-              </section>
-            )
           )}
 
-          {!pro && data.bet_suggestions.length > 0 && (
-            <section className="card">
-              <h2 className="section-title">Apuestas sugeridas (basico)</h2>
-              <div className="bet-tiers">
-                {data.bet_suggestions.map((b) => (
-                  <article key={b.tier} className={`bet-tier ${b.tier}`}>
-                    <strong>{b.label}</strong>
-                    <p>
-                      {b.market}: {b.selection} ({(b.model_probability * 100).toFixed(0)}%)
-                    </p>
-                  </article>
+          {data.bet_suggestions.length > 0 && (
+            <section className="card" style={{ marginTop: "1rem" }}>
+              <h2 style={{ margin: "0 0 0.75rem", fontSize: "1rem" }}>
+                Apuestas sugeridas
+              </h2>
+              <ul className="bet-suggestions-list">
+                {data.bet_suggestions.slice(0, 6).map((b, i) => (
+                  <li key={i}>
+                    <strong>{b.selection}</strong>
+                    <span className="muted small"> · {b.market}</span>
+                    <div className="muted small">
+                      {(b.model_probability * 100).toFixed(0)}% · {b.rationale}
+                    </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
+              <p style={{ marginTop: "0.75rem" }}>
+                <Link to="/apuestas">Ver más en apuestas →</Link>
+              </p>
             </section>
           )}
         </div>
 
-        <aside className="match-detail-aside">
+        <aside>
           <section className="card">
-            <h2 className="section-title">Selecciones (Elo)</h2>
-            <div className="aside-elo-grid">
-              {(["home", "away"] as const).map((side) => {
-                const t = data.teams[side];
-                const elo = t.elo as Record<string, unknown> | null;
-                return (
-                  <div key={side} className="aside-elo-card">
-                    <div className="team-block team-block-start">
-                      <span className="team-crest">{teamInitials(t.name)}</span>
-                      <h3 className="team-elo-title">{t.name}</h3>
-                    </div>
-                    {elo ? (
-                      <ul className="form-stats">
-                        <li>Elo: {String(elo.elo ?? "—")}</li>
-                        <li>Ranking: {String(elo.global_rank ?? "—")}</li>
-                        <li>
-                          Historial: {String(elo.wins ?? 0)}V / {String(elo.draws ?? 0)}E /{" "}
-                          {String(elo.losses ?? 0)}D
-                        </li>
-                      </ul>
-                    ) : (
-                      <p className="muted">Sin Elo</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <h3 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>Elo</h3>
+            {data.teams.home.elo && (
+              <p className="small">
+                {m.home_team}:{" "}
+                <strong>
+                  {Math.round(Number((data.teams.home.elo as { rating?: number }).rating ?? 0))}
+                </strong>
+              </p>
+            )}
+            {data.teams.away.elo && (
+              <p className="small">
+                {m.away_team}:{" "}
+                <strong>
+                  {Math.round(Number((data.teams.away.elo as { rating?: number }).rating ?? 0))}
+                </strong>
+              </p>
+            )}
+            {!data.teams.home.elo && !data.teams.away.elo && (
+              <p className="muted small">Sin ratings Elo</p>
+            )}
           </section>
 
           {data.head_to_head.length > 0 && (
-            <section className="card">
-              <h2 className="section-title">Historial directo</h2>
-              <ul className="h2h-list">
-                {data.head_to_head.map((h) => (
-                  <li key={`${h.date}-${h.home_team}`}>
-                    <strong>{formatMatchDateShortEs(h.date)}</strong> — {h.home_team}{" "}
-                    <span className="h2h-score">
-                      {h.home_goals ?? "?"}–{h.away_goals ?? "?"}
-                    </span>{" "}
-                    {h.away_team}
+            <section className="card" style={{ marginTop: "1rem" }}>
+              <h3 style={{ margin: "0 0 0.75rem", fontSize: "0.95rem" }}>
+                Historial H2H
+              </h3>
+              <ul className="bet-suggestions-list">
+                {data.head_to_head.slice(0, 5).map((h, i) => (
+                  <li key={i}>
+                    {h.home_team} {h.home_goals}–{h.away_goals} {h.away_team}
+                    <div className="muted small">{h.date}</div>
                   </li>
                 ))}
               </ul>
             </section>
           )}
-
-          <section className="card subtle">
-            <h2 className="section-title">Capas de datos</h2>
-            <div className="layer-chips">
-              {Object.entries(data.data_layers).map(([k, ok]) => (
-                <span key={k} className={ok ? "layer on" : "layer"}>
-                  {ok ? "✓" : "○"} {k.replaceAll("_", " ")}
-                </span>
-              ))}
-            </div>
-            <p className="muted small">{data.roadmap_note}</p>
-          </section>
         </aside>
       </div>
     </div>

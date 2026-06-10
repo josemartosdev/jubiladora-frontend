@@ -1,333 +1,232 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  API_FALLBACK,
-  API_URL,
+  fixtureToPrediction,
   getInterestingMatch,
   getOverview,
+  getWorldCupCalendar,
   loadHomePredictions,
-  postOddsInitialLoad,
-  postOddsUpdateResults,
-  type CalendarSync,
-  type ForecastDay,
+  MAX_PREDICTION_DAYS,
   type InterestingMatchResponse,
   type Overview,
+  type Prediction,
 } from "../api/client";
+import { ErrorAlert } from "../components/ErrorAlert";
 import { MatchCard } from "../components/MatchCard";
-import { useAppClock } from "../context/AppClockContext";
-import {
-  formatKickoffTimeEs,
-  formatMatchDateShortEs,
-} from "../lib/datetimeEs";
+import { filterWorldCupPredictions } from "../lib/worldCup";
+
+function isModelMissingError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return m.includes("modelo") || m.includes("train");
+}
 
 export function HomePage() {
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [interesting, setInteresting] = useState<InterestingMatchResponse | null>(
-    null,
-  );
-  const [byDay, setByDay] = useState<ForecastDay[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [predCount, setPredCount] = useState(0);
-  const [message, setMessage] = useState<string | null>(null);
-  const [apiHint, setApiHint] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [interesting, setInteresting] = useState<InterestingMatchResponse | null>(null);
+  const [matches, setMatches] = useState<Prediction[]>([]);
+  const [wcCount, setWcCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [todayMatchCount, setTodayMatchCount] = useState(0);
-  const [calendarSync, setCalendarSync] = useState<CalendarSync | null>(null);
-  const [oddsBusy, setOddsBusy] = useState<"initial" | "results" | null>(null);
-  const [oddsMessage, setOddsMessage] = useState<string | null>(null);
-  const { todayIso, syncClock } = useAppClock();
+  const [error, setError] = useState<string | null>(null);
+  const [setupHint, setSetupHint] = useState<string | null>(null);
+  const [fallbackHint, setFallbackHint] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setMessage(null);
-
-    const overviewResult = await Promise.allSettled([getOverview()]);
-    if (overviewResult[0].status === "fulfilled") {
-      setOverview(overviewResult[0].value);
-    }
-
+    setSetupHint(null);
+    setFallbackHint(null);
     try {
-      const [data, interestingRes] = await Promise.all([
-        loadHomePredictions(7),
-        getInterestingMatch(7).catch(() => ({ status: "empty" as const })),
+      const [ov, homeRes, inter, wc] = await Promise.all([
+        getOverview().catch(() => null),
+        loadHomePredictions(MAX_PREDICTION_DAYS).catch((e) => ({
+          error: e instanceof Error ? e.message : String(e),
+          upcoming: [] as Prediction[],
+        })),
+        getInterestingMatch(MAX_PREDICTION_DAYS).catch(() => ({
+          status: "empty" as const,
+        })),
+        getWorldCupCalendar().catch(() => null),
       ]);
-      setByDay(data.byDay);
-      setTotalCount(data.upcoming.length);
-      setPredCount(data.countWithPrediction);
-      setMessage(data.message);
-      setApiHint(data.apiHint);
-      setTodayMatchCount(data.todayMatchCount);
-      setCalendarSync(data.calendarSync);
-      if (data.appClock) syncClock(data.appClock);
-      if (interestingRes.status === "ok") {
-        setInteresting(interestingRes);
+
+      setOverview(ov);
+
+      if (inter.status === "ok") setInteresting(inter);
+      else setInteresting(null);
+
+      let all: Prediction[] = [];
+      if ("error" in homeRes) {
+        const wcUpcoming =
+          wc?.by_date?.flatMap((d) => d.upcoming) ??
+          wc?.phases?.flatMap((p) => p.groups?.flatMap((g) => g.matches) ?? p.matches ?? []) ??
+          [];
+        all = wcUpcoming.map(fixtureToPrediction);
+        if (isModelMissingError(homeRes.error)) {
+          setSetupHint("model");
+        } else {
+          setError(homeRes.error);
+        }
       } else {
-        setInteresting(null);
+        all = homeRes.upcoming;
+        if (homeRes.mode === "calendar_match_fallback" && homeRes.hint) {
+          setFallbackHint(homeRes.hint);
+        }
       }
+
+      const wcMatches = filterWorldCupPredictions(all);
+      setMatches(wcMatches.length > 0 ? wcMatches : []);
+      setWcCount(wc?.total_matches ?? wcMatches.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar");
-      setInteresting(null);
-      setByDay([]);
-      setTotalCount(0);
-      setPredCount(0);
     } finally {
       setLoading(false);
     }
-  }, [syncClock]);
+  }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const handleOddsInitial = async () => {
-    setOddsBusy("initial");
-    setOddsMessage(null);
-    try {
-      await postOddsInitialLoad();
-      await load();
-    } catch (e) {
-      setOddsMessage(e instanceof Error ? e.message : "Error en volcado Odds API");
-    } finally {
-      setOddsBusy(null);
-    }
-  };
+  const predWithModel = useMemo(
+    () => matches.filter((m) => m.has_prediction !== false && m.confidence > 0).length,
+    [matches],
+  );
 
-  const handleOddsResults = async () => {
-    setOddsBusy("results");
-    setOddsMessage(null);
-    try {
-      await postOddsUpdateResults(3);
-      await load();
-    } catch (e) {
-      setOddsMessage(
-        e instanceof Error ? e.message : "Error al actualizar resultados",
-      );
-    } finally {
-      setOddsBusy(null);
-    }
-  };
-
-  useEffect(() => {
-    if (!oddsMessage) return;
-    const id = window.setTimeout(() => setOddsMessage(null), 8000);
-    return () => window.clearTimeout(id);
-  }, [oddsMessage]);
-
-  const featuredPrediction = useMemo(() => {
-    if (!interesting?.match_id) return null;
-    const all = byDay.flatMap((d) => d.items);
-    return all.find((p) => p.match_id === interesting.match_id) ?? null;
-  }, [byDay, interesting]);
-
-  const apiLabel = API_URL || `(directo ${API_FALLBACK})`;
+  const pickLabel =
+    interesting?.pick === "home"
+      ? "Victoria local"
+      : interesting?.pick === "draw"
+        ? "Empate"
+        : interesting?.pick === "away"
+          ? "Victoria visitante"
+          : interesting?.pick_label ?? "—";
 
   return (
-    <div className="page">
-      <header className="page-head">
-        <span className="page-badge">Centro pro</span>
-        <h1>Centro de predicciones</h1>
-        <p>
-          Calendario completo por dia (7 dias). El partido destacado es el que el
-          modelo marca como mas interesante hoy.
+    <div className="page page--home">
+      <header className="page-hero page-hero--home">
+        <span className="wc-badge">Copa del Mundo 2026</span>
+        <h1>Pronósticos y apuestas ficticias</h1>
+        <p className="muted">
+          Modelo 1X2 + simulación Poisson. Enfocado en partidos del Mundial.
         </p>
-        <div className="page-actions">
-          {calendarSync && (
-            <span
-              className={`calendar-sync-badge ${calendarSync.stale ? "stale" : "ok"}`}
-              title={
-                calendarSync.last_sync_at
-                  ? `Último sync: ${calendarSync.last_sync_at}`
-                  : "Aún no se ha sincronizado el calendario"
-              }
-            >
-              {calendarSync.in_progress
-                ? "Sincronizando calendario…"
-                : calendarSync.stale
-                  ? "Calendario pendiente de sync"
-                  : "Calendario en línea"}
-            </span>
-          )}
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={handleOddsInitial}
-            disabled={loading || oddsBusy !== null}
-            title="The Odds API: GET /sports/{torneo}/odds (1 crédito por torneo)"
-          >
-            {oddsBusy === "initial" ? "Cargando…" : "Cargar calendario (Odds API)"}
-          </button>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={handleOddsResults}
-            disabled={loading || oddsBusy !== null}
-            title="The Odds API: GET /sports/{torneo}/scores (Mundial + amistosos)"
-          >
-            {oddsBusy === "results"
-              ? "Actualizando…"
-              : "Actualizar resultados (Mundial + amistosos)"}
-          </button>
-          <button type="button" className="btn-refresh" onClick={load} disabled={loading}>
-            {loading ? "Recargando vista…" : "↻ Recargar"}
+        <div className="hero-actions">
+          <Link to="/calendario" className="btn btn-primary">
+            Ver calendario
+          </Link>
+          <Link to="/apuestas" className="btn">
+            Ir a apuestas
+          </Link>
+          <Link to="/configuracion" className="btn">
+            Configuración
+          </Link>
+          <button type="button" className="btn" onClick={load} disabled={loading}>
+            {loading ? "Actualizando…" : "Actualizar"}
           </button>
         </div>
-        {oddsMessage && (
-          <p className="muted small odds-sync-msg odds-sync-msg--error">{oddsMessage}</p>
-        )}
       </header>
 
-      {loading && (
-        <p className="muted loading-dots">Cargando calendario desde BD</p>
-      )}
-
-      {error && (
-        <div className="alert">
-          <strong>Error</strong>
-          <p>{error}</p>
-          <p className="muted">API: {apiLabel}</p>
-        </div>
-      )}
-
-      {apiHint && totalCount === 0 && (
-        <div className="alert subtle">
-          <p>{apiHint}</p>
-        </div>
-      )}
-
-      {message && !error && totalCount === 0 && (
-        <div className="alert">
-          <strong>Sin partidos en pantalla</strong>
-          <p>{message}</p>
-          <p className="muted">
-            Calendario en BD vía football-data.org. En el backend:{" "}
-            <code>.\scripts\sync-fixtures.ps1</code> (1 petición). Luego Actualizar.
+      {setupHint && (
+        <div className="setup-banner">
+          <strong>Configuración pendiente</strong>
+          <p>
+            El modelo 1X2 aún no está entrenado. Ve a{" "}
+            <Link to="/configuracion">Configuración</Link> y ejecuta el pipeline
+            (BD → CSV → Entrenar → Sync).
           </p>
         </div>
       )}
+      {fallbackHint && (
+        <p className="muted small info-banner">{fallbackHint}</p>
+      )}
+      {error && <ErrorAlert error={error} />}
+      {loading && <p className="muted loading-dots">Cargando</p>}
 
       {!loading && (
-        <>
-          <section className="hero-pick hero-interesting">
-            <div className="hero-label">Partido interesante del dia</div>
-            {interesting?.status === "ok" ? (
-              <>
-                {interesting.reason && (
-                  <p className="hero-interesting-reason">{interesting.reason}</p>
-                )}
-                <div className="hero-pick-inner">
-                  {featuredPrediction ? (
-                    <MatchCard p={featuredPrediction} featured />
-                  ) : (
-                    <article className="card match-card featured interesting-fallback">
-                      <div className="match-card-top">
-                        <time>
-                          {formatMatchDateShortEs(
-                            interesting.date ?? "",
-                            interesting.kickoff_at,
-                          )}
-                          {interesting.kickoff_at && (
-                            <span className="match-card-kickoff">
-                              {formatKickoffTimeEs(
-                                interesting.date ?? "",
-                                interesting.kickoff_at,
-                              )}
-                            </span>
-                          )}
-                        </time>
-                      </div>
-                      <div className="match-spotlight compact">
-                        <div className="team-block home">
-                          <span className="team-crest">◆</span>
-                          <span className="team-name">{interesting.home_team}</span>
-                        </div>
-                        <span className="vs-badge">VS</span>
-                        <div className="team-block away">
-                          <span className="team-crest">◆</span>
-                          <span className="team-name">{interesting.away_team}</span>
-                        </div>
-                      </div>
-                      <p className="muted small">
-                        {interesting.tournament}
-                        {interesting.pick_label &&
-                          ` · Lectura: ${interesting.pick_label} (${interesting.confidence_pct}%)`}
-                      </p>
-                    </article>
-                  )}
-                </div>
-                <div className="hero-interesting-actions">
-                  <Link
-                    to={`/partido/${interesting.match_id}`}
-                    className="btn primary"
-                  >
-                    Ver ficha pro
-                  </Link>
-                  <Link to="/apuestas" className="btn ghost">
-                    Apuestas y combinada
-                  </Link>
-                </div>
-              </>
-            ) : (
-              <div className="card empty">
-                No hay partido destacado. Sincroniza el calendario del Mundial.
-              </div>
+        <div className="stats-row">
+          <div className="stat-card">
+            <span>Partidos Mundial</span>
+            <strong>{wcCount}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Próximos con pick</span>
+            <strong>{predWithModel}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Equipos en BD</span>
+            <strong>{overview?.teams ?? "—"}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Modelo activo</span>
+            <strong>{overview?.active_model?.version ?? "—"}</strong>
+          </div>
+        </div>
+      )}
+
+      {!loading && interesting?.match_id && (
+        <section className="card featured-match">
+          <h2 className="section-title section-title--gold">Partido destacado</h2>
+          <div className="featured-teams">
+            <div className="featured-team">
+              <strong>{interesting.home_team}</strong>
+            </div>
+            <span className="featured-vs">VS</span>
+            <div className="featured-team">
+              <strong>{interesting.away_team}</strong>
+            </div>
+          </div>
+          <p className="muted small featured-meta">
+            {interesting.tournament}
+            {interesting.round && ` · ${interesting.round}`}
+          </p>
+          <p className="featured-pick">
+            Pick: <span className="pick-chip">{pickLabel}</span>
+            {interesting.confidence_pct != null && (
+              <span className="muted small"> · {interesting.confidence_pct}% confianza</span>
             )}
-          </section>
+          </p>
+          <p className="featured-links">
+            <Link to={`/partido/${interesting.match_id}`} className="btn btn-sm btn-primary">
+              Ver análisis
+            </Link>
+            <Link to="/apuestas" className="btn btn-sm">
+              Ir a apuestas
+            </Link>
+          </p>
+        </section>
+      )}
 
-          <section className="stats-row">
-            <div className="stat accent-stat">
-              <div className="stat-icon">⚽</div>
-              <span>Partidos hoy ({todayIso})</span>
-              <strong>{todayMatchCount}</strong>
-            </div>
-            <div className="stat">
-              <div className="stat-icon">📆</div>
-              <span>Partidos (7 dias)</span>
-              <strong>{totalCount}</strong>
-            </div>
-            <div className="stat accent-stat">
-              <div className="stat-icon">◎</div>
-              <span>Con prediccion Elo</span>
-              <strong>{predCount}</strong>
-            </div>
-            <div className="stat">
-              <div className="stat-icon">✓</div>
-              <span>Test accuracy modelo</span>
-              <strong>
-                {overview?.active_model?.metrics?.test_accuracy
-                  ? `${(Number(overview.active_model.metrics.test_accuracy) * 100).toFixed(1)}%`
-                  : "—"}
-              </strong>
-            </div>
-          </section>
+      {!loading && matches.length > 0 && (
+        <section>
+          <h2 className="section-title">
+            Próximos partidos
+            {predWithModel === 0 && (
+              <span className="muted small"> · sin predicciones aún</span>
+            )}
+          </h2>
+          <div className="match-list">
+            {matches.slice(0, 8).map((p) => (
+              <MatchCard
+                key={p.external_fixture_id ?? p.match_id}
+                p={p}
+                compact
+              />
+            ))}
+          </div>
+          {matches.length > 8 && (
+            <p className="section-more">
+              <Link to="/predicciones">Ver todos los pronósticos →</Link>
+            </p>
+          )}
+        </section>
+      )}
 
-          {byDay.map((day) => (
-            <section key={day.date} className="day-section">
-              <h2>
-                {day.label}{" "}
-                <span className="muted">
-                  ({formatMatchDateShortEs(day.date)}) — {day.count} partidos
-                  {day.with_prediction > 0 &&
-                    `, ${day.with_prediction} con prediccion`}
-                </span>
-              </h2>
-              {day.items.length === 0 ? (
-                <div className="card empty">Sin partidos este dia.</div>
-              ) : (
-                <div className="match-grid">
-                  {day.items.map((p) => (
-                    <MatchCard
-                      key={p.external_fixture_id ?? p.match_id}
-                      p={p}
-                      compact
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          ))}
-        </>
+      {!loading && matches.length === 0 && !error && (
+        <div className="card empty-state">
+          <p>No hay partidos cargados.</p>
+          <p className="muted small">
+            <Link to="/configuracion">Configuración</Link> → sincroniza calendario, o ve al{" "}
+            <Link to="/calendario">Calendario</Link>.
+          </p>
+        </div>
       )}
     </div>
   );

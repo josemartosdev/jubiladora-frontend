@@ -14,15 +14,15 @@ const MODE_LABEL: Record<string, string> = {
 };
 
 const PICK_LABEL: Record<string, string> = {
-  home: "Victoria local",
-  draw: "Empate",
-  away: "Victoria visitante",
+  home: "1 Local",
+  draw: "X Empate",
+  away: "2 Visit.",
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  live: "En directo",
-  scheduled: "Programado",
-  finished: "Finalizado",
+const PICK_SHORT: Record<string, string> = {
+  home: "1",
+  draw: "X",
+  away: "2",
 };
 
 function teamInitials(name: string): string {
@@ -46,7 +46,7 @@ function ProbPills({
     { key: "away", label: "2", cls: "away" },
   ];
   return (
-    <div className="prob-pills">
+    <div className="prob-pills match-card-probs">
       {rows.map(({ key, label, cls }) => (
         <span
           key={key}
@@ -71,11 +71,11 @@ export function MatchCard({
   const hasPrediction = p.has_prediction !== false && p.confidence > 0;
   const modeLabel = p.inference_mode ? MODE_LABEL[p.inference_mode] ?? p.inference_mode : null;
   const pickLabel = PICK_LABEL[p.pick] ?? p.pick;
+  const pickShort = PICK_SHORT[p.pick] ?? "?";
   const confPct = Math.round(p.confidence * 100);
   const kickoff = formatKickoffTimeEs(p.date, p.kickoff_at);
   const dateLabel = formatMatchDateShortEs(p.date, p.kickoff_at);
   const isLive = p.status === "live";
-  const statusLabel = STATUS_LABEL[p.status] ?? p.status;
 
   const correct =
     p.has_result &&
@@ -89,119 +89,92 @@ export function MatchCard({
     compact ? "compact" : "",
     featured ? "featured" : "",
     isLive ? "is-live" : "",
+    hasPrediction ? "has-pred" : "no-pred",
   ]
     .filter(Boolean)
     .join(" ");
 
-  const vsCenter = (
-    <div className="vs-stack" aria-label={kickoff ? `Hora ${kickoff}` : undefined}>
-      {kickoff ? (
-        <span
-          className="match-hour-badge"
-          title="Hora en España (península)"
-        >
-          {kickoff}
-        </span>
-      ) : null}
-      <span className={`vs-label ${isLive ? "live" : ""}`}>
-        {isLive ? "LIVE" : "VS"}
-      </span>
-      {compact && !kickoff && (
-        <span className="match-hour-badge muted-hour">—:—</span>
-      )}
-    </div>
-  );
+  const matchId = p.external_fixture_id ?? p.match_id;
 
   return (
     <article className={cardClass}>
-      <header className="match-head">
-        <div>
-          <time className="match-card-time">
-            {dateLabel}
-            {!compact && kickoff && (
-              <span className="match-card-kickoff">{kickoff}</span>
-            )}
-            {isLive && <span className="live-tag">EN DIRECTO</span>}
-            {p.is_future && !isLive && <span className="future-tag">FUTURO</span>}
-          </time>
-          <div className="match-teams-row">
-            <div className="team-block home">
-              <span className="team-crest" aria-hidden>
-                {teamInitials(p.home_team)}
-              </span>
-              <span className="team-name">{p.home_team}</span>
+      <div className="match-card-top">
+        <div className="match-card-meta">
+          <time className="match-card-date">{dateLabel}</time>
+          {kickoff && <span className="match-card-time">{kickoff}</span>}
+          {isLive && <span className="live-tag">LIVE</span>}
+          {p.is_future && !isLive && <span className="future-tag">FUTURO</span>}
+        </div>
+        {p.tournament && (
+          <span className="match-card-tournament">{p.tournament}</span>
+        )}
+      </div>
+
+      <div className="match-card-body">
+        <div className="match-card-team home">
+          <span className="team-crest team-crest--home" aria-hidden>
+            {teamInitials(p.home_team)}
+          </span>
+          <span className="team-name">{p.home_team}</span>
+        </div>
+
+        <div className="match-card-center">
+          {hasPrediction ? (
+            <div className="match-card-pick" title={pickLabel}>
+              <span className="match-card-pick-label">Pick</span>
+              <strong className="match-card-pick-value">{pickShort}</strong>
+              <span className="match-card-conf">{confPct}%</span>
             </div>
-            {vsCenter}
-            <div className="team-block away">
-              <span className="team-crest" aria-hidden>
-                {teamInitials(p.away_team)}
-              </span>
-              <span className="team-name">{p.away_team}</span>
-            </div>
-          </div>
-          {p.tournament && <p className="tournament">{p.tournament}</p>}
-          {compact && (
-            <p className="match-card-status muted small">
-              {statusLabel}
-              {kickoff ? ` · ${kickoff}` : ""}
-            </p>
+          ) : (
+            <span className="match-card-vs">VS</span>
+          )}
+          {kickoff && compact && (
+            <span className="match-card-kickoff-mini">{kickoff}</span>
           )}
         </div>
-        {hasPrediction ? (
-          <div className="pick-badge">
-            {featured && (
-              <div className="conf-ring-wrap">
-                <div
-                  className="conf-ring"
-                  style={{ "--pct": confPct } as React.CSSProperties}
-                  title={`${confPct}% confianza`}
-                >
-                  <span>{confPct}%</span>
-                </div>
-              </div>
-            )}
-            <small>Pick modelo</small>
-            <strong>{pickLabel}</strong>
-            {!featured && <span>{confPct}% conf.</span>}
-            {modeLabel && <span className="mode-tag">{modeLabel}</span>}
-          </div>
-        ) : (
-          <div className="pick-badge muted-badge">
-            <small>Sin Elo</small>
-            <strong>Sin prediccion</strong>
-          </div>
-        )}
-      </header>
-      {!compact && hasPrediction && (
-        <>
-          <ProbBars probs={p.probabilities} highlight={p.pick} />
-          <p className="muted small card-hint">
-            Ficha pro: goles, corners, faltas, BTTS y 14+ mercados
-          </p>
-        </>
-      )}
+
+        <div className="match-card-team away">
+          <span className="team-crest team-crest--away" aria-hidden>
+            {teamInitials(p.away_team)}
+          </span>
+          <span className="team-name">{p.away_team}</span>
+        </div>
+      </div>
+
       {compact && hasPrediction && (
         <ProbPills probs={p.probabilities} highlight={p.pick} />
       )}
-      {p.external_fixture_id && (
-        <p className="match-link">
-          <Link to={`/partido/${p.external_fixture_id}`}>Ver ficha completa →</Link>
-        </p>
+
+      {!compact && hasPrediction && (
+        <ProbBars probs={p.probabilities} highlight={p.pick} />
       )}
-      <footer className="match-foot">
-        {p.home_elo != null && p.away_elo != null && (
-          <span>
-            Elo {Math.round(p.home_elo)} — {Math.round(p.away_elo)} (Δ{" "}
-            {Math.round(p.elo_diff ?? 0)})
-          </span>
-        )}
-        {p.has_result && (
-          <span className={correct ? "hit" : "miss"}>
-            Resultado {p.home_goals}-{p.away_goals} ({p.actual_result})
-            {correct ? " ✓ acierto" : " ✗"}
-          </span>
+
+      <footer className="match-card-foot">
+        <div className="match-card-foot-left">
+          {modeLabel && <span className="mode-tag">{modeLabel}</span>}
+          {p.home_elo != null && p.away_elo != null && (
+            <span className="match-elo muted small">
+              Elo {Math.round(p.home_elo)}–{Math.round(p.away_elo)}
+            </span>
+          )}
+          {p.has_result && (
+            <span className={correct ? "hit" : "miss"}>
+              {p.home_goals}-{p.away_goals} ({p.actual_result})
+            </span>
+          )}
+        </div>
+        {matchId > 0 && (
+          <Link to={`/partido/${matchId}`} className="match-card-cta">
+            Ver ficha →
+          </Link>
         )}
       </footer>
+
+      {featured && hasPrediction && (
+        <div className="match-card-featured-badge">
+          Mejor pick · {pickLabel} · {confPct}%
+        </div>
+      )}
     </article>
   );
 }

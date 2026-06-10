@@ -6,11 +6,11 @@ import { BetSlipProvider } from "./context/BetSlipContext";
 import { Layout } from "./components/Layout";
 import { BettingPage } from "./pages/BettingPage";
 import { CalendarPage } from "./pages/CalendarPage";
-import { ExplorePage } from "./pages/ExplorePage";
 import { HomePage } from "./pages/HomePage";
 import { MatchDetailPage } from "./pages/MatchDetailPage";
 import { PredictionsPage } from "./pages/PredictionsPage";
-import "./design-tokens.css";
+import { ConfigPage } from "./pages/ConfigPage";
+import { SimulationPage } from "./pages/SimulationPage";
 import "./App.css";
 
 export default function App() {
@@ -36,13 +36,14 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route element={<Layout online={online} />}>
-            <Route index element={<HomePage />} />
-            <Route path="apuestas" element={<BettingPage />} />
-            <Route path="calendario" element={<CalendarPage />} />
-            <Route path="predicciones" element={<PredictionsPage />} />
-            <Route path="explorar" element={<ExplorePage />} />
-            <Route path="partido/:fixtureId" element={<MatchDetailPage />} />
-          </Route>
+              <Route index element={<HomePage />} />
+              <Route path="predicciones" element={<PredictionsPage />} />
+              <Route path="simulacion" element={<SimulationPage />} />
+              <Route path="apuestas" element={<BettingPage />} />
+              <Route path="calendario" element={<CalendarPage />} />
+              <Route path="configuracion" element={<ConfigPage />} />
+              <Route path="partido/:fixtureId" element={<MatchDetailPage />} />
+            </Route>
           </Routes>
         </BrowserRouter>
       </BetSlipProvider>

@@ -1,7 +1,32 @@
+import { ApiError, buildApiError } from "../lib/apiError";
+import {
+  bestWorldCupPick,
+  filterWorldCupDays,
+  filterWorldCupPredictions,
+  isWorldCupFixture,
+} from "../lib/worldCup";
+
+const WC_CAL_CACHE_TTL_MS = 5 * 60_000;
+let wcCalCache: { at: number; data: WorldCupCalendar } | null = null;
+
 /** En dev, vacio usa proxy Vite -> backend (vite.config.ts). */
 const API_URL = import.meta.env.VITE_API_URL ?? "";
 const API_FALLBACK = "http://127.0.0.1:8888";
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+/** Maximo que acepta la API en ?days= (FastAPI le=7). */
+export const MAX_PREDICTION_DAYS = 7;
+
+function clampDays(days: number): number {
+  return Math.min(Math.max(1, days), MAX_PREDICTION_DAYS);
+}
+
+function apiBases(): string[] {
+  if (API_URL) return [API_URL.replace(/\/$/, "")];
+  // En dev solo proxy Vite: evita CORS localhost:5173 -> 127.0.0.1:8888
+  if (import.meta.env.DEV) return [""];
+  return [API_FALLBACK];
+}
 
 export type Probabilities = {
   home: number;
@@ -178,21 +203,7 @@ export type WorldCupCalendar = {
   sync_hint: string | null;
 };
 
-function formatApiError(body: unknown, fallback: string): string {
-  if (!body || typeof body !== "object") return fallback;
-  const detail = (body as { detail?: unknown }).detail;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((d) =>
-        typeof d === "object" && d && "msg" in d
-          ? String((d as { msg: string }).msg)
-          : JSON.stringify(d),
-      )
-      .join("; ");
-  }
-  return fallback;
-}
+export { ApiError, toErrorDisplay } from "../lib/apiError";
 
 async function fetchJsonOnce<T>(
   base: string,
@@ -213,15 +224,7 @@ async function fetchJsonOnce<T>(
     });
     const text = await res.text();
     if (!res.ok) {
-      let detail = `${res.status} ${path}`;
-      if (text) {
-        try {
-          detail = formatApiError(JSON.parse(text) as unknown, detail);
-        } catch {
-          detail = text.length > 200 ? `${text.slice(0, 200)}…` : text;
-        }
-      }
-      throw new Error(detail);
+      throw buildApiError(res.status, path, text);
     }
     if (!text) {
       throw new Error(`Respuesta vacia (${path})`);
@@ -243,21 +246,26 @@ async function fetchJsonOnce<T>(
   }
 }
 
+function isNetworkFailure(err: Error): boolean {
+  if (err.name === "AbortError") return false;
+  if (err instanceof ApiError && err.httpStatus != null) return false;
+  return true;
+}
+
 async function fetchJson<T>(
   path: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   method: "GET" | "POST" = "GET",
   body?: unknown,
 ): Promise<T> {
-  // En dev sin VITE_API_URL: proxy Vite primero (evita CORS localhost -> 127.0.0.1).
-  const bases = API_URL ? [API_URL, API_FALLBACK] : ["", API_FALLBACK];
+  const bases = apiBases();
   let lastErr: Error | null = null;
   for (const base of bases) {
     try {
       return await fetchJsonOnce<T>(base, path, timeoutMs, method, body);
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
-      if (base === bases[bases.length - 1]) break;
+      if (base === bases[bases.length - 1] || !isNetworkFailure(lastErr)) break;
     }
   }
   throw (
@@ -310,25 +318,88 @@ export async function getFuturePredictions(limit = 30) {
 }
 
 export async function getUpcomingPredictions(limit = 30) {
-  return fetchJson<UpcomingResponse>(
-    `/api/v1/predictions/upcoming?limit=${limit}`,
-  );
+  try {
+    return await fetchJson<UpcomingResponse>(
+      `/api/v1/predictions/upcoming?limit=${limit}`,
+    );
+  } catch (e) {
+    if (!shouldUsePredictionsFallback(e)) throw e;
+    const { buildUpcomingFromCalendar } = await import(
+      "../lib/predictionsFallback"
+    );
+    return buildUpcomingFromCalendar(limit);
+  }
 }
 
 export async function getPickOfDay() {
-  return fetchJson<PickOfDayResponse>("/api/v1/predictions/pick-of-the-day");
+  try {
+    return await fetchJson<PickOfDayResponse>("/api/v1/predictions/pick-of-the-day");
+  } catch (e) {
+    if (!shouldUsePredictionsFallback(e)) throw e;
+    const { buildHomePredictionsFromCalendar } = await import(
+      "../lib/predictionsFallback"
+    );
+    const home = await buildHomePredictionsFromCalendar(7);
+    return {
+      status: "ok",
+      pick: home.pick ?? undefined,
+      message: home.hint ?? "Pick del día (fallback calendario).",
+    };
+  }
 }
 
 export async function getForecast(days = 3, refresh = false) {
-  const q = new URLSearchParams({ days: String(days) });
+  const q = new URLSearchParams({ days: String(clampDays(days)) });
   if (refresh) q.set("refresh", "1");
   return fetchJson<ForecastResponse>(`/api/v1/predictions/forecast?${q}`);
 }
 
+function shouldUsePredictionsFallback(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false;
+  return e.httpStatus === 404 || e.httpStatus === 500;
+}
+
+/** Forecast con fallback si /forecast o /home fallan (404/500). */
+export async function getForecastWithFallback(days = 3, refresh = false) {
+  try {
+    return await getForecast(days, refresh);
+  } catch (e) {
+    if (!shouldUsePredictionsFallback(e)) throw e;
+    try {
+      const home = await getHomePredictions(days, refresh);
+      return { ...home, mode: home.mode ?? "home" } as ForecastResponse;
+    } catch (e2) {
+      if (!shouldUsePredictionsFallback(e2)) throw e2;
+      const { buildHomePredictionsFromCalendar } = await import(
+        "../lib/predictionsFallback"
+      );
+      return buildHomePredictionsFromCalendar(clampDays(days));
+    }
+  }
+}
+
 export async function getHomePredictions(days = 3, refresh = false) {
-  const q = new URLSearchParams({ days: String(days) });
+  const q = new URLSearchParams({ days: String(clampDays(days)) });
   if (refresh) q.set("refresh", "1");
-  return fetchJson<HomePredictionsResponse>(`/api/v1/predictions/home?${q}`);
+  try {
+    return await fetchJson<HomePredictionsResponse>(
+      `/api/v1/predictions/home?${q}`,
+    );
+  } catch (e) {
+    if (!shouldUsePredictionsFallback(e)) throw e;
+    const { buildHomePredictionsFromCalendar } = await import(
+      "../lib/predictionsFallback"
+    );
+    return buildHomePredictionsFromCalendar(clampDays(days));
+  }
+}
+
+/** Pronóstico 1X2 de un partido (funciona cuando /home devuelve 500). */
+export async function getMatchPrediction(matchId: number) {
+  return fetchJson<{ status: string; prediction: Prediction }>(
+    `/api/v1/predictions/match/${matchId}`,
+    20_000,
+  );
 }
 
 export async function loadHomePredictions(days = 3): Promise<{
@@ -345,17 +416,15 @@ export async function loadHomePredictions(days = 3): Promise<{
   calendarSync: CalendarSync | null;
 }> {
   const res = await getHomePredictions(days, false);
+  const upcoming = filterWorldCupPredictions(res.items);
+  const byDay = filterWorldCupDays(res.by_day ?? []);
   const pick =
-    res.pick ??
-    (res.items.filter((p) => p.has_prediction !== false).length
-      ? [...res.items]
-          .filter((p) => p.has_prediction !== false)
-          .sort((a, b) => b.confidence - a.confidence)[0]
-      : null);
+    bestWorldCupPick(upcoming) ??
+    (res.pick ? filterWorldCupPredictions([res.pick])[0] ?? null : null);
   return {
     pick,
-    upcoming: res.items,
-    byDay: res.by_day ?? [],
+    upcoming,
+    byDay,
     hint: res.hint ?? null,
     mode: res.mode,
     message: res.message ?? null,
@@ -367,8 +436,35 @@ export async function loadHomePredictions(days = 3): Promise<{
   };
 }
 
+export function fixtureToPrediction(f: FixtureItem): Prediction {
+  const extId = f.external_id ? Number(f.external_id) : undefined;
+  return {
+    match_id: f.id,
+    external_fixture_id: Number.isFinite(extId) ? extId : f.id,
+    date: f.date,
+    kickoff_at: f.kickoff_at,
+    status: f.status,
+    home_team: f.home_team,
+    away_team: f.away_team,
+    tournament: f.tournament,
+    round: f.round,
+    source: f.source,
+    home_elo: null,
+    away_elo: null,
+    elo_diff: null,
+    probabilities: { home: 0, draw: 0, away: 0 },
+    pick: "home",
+    confidence: 0,
+    has_result: f.status === "finished",
+    actual_result: f.result_1x2 ?? null,
+    home_goals: f.home_goals ?? null,
+    away_goals: f.away_goals ?? null,
+    has_prediction: false,
+  };
+}
+
 export async function loadPredictionsList(_limit = 200) {
-  const res = await getForecast(3, true);
+  const res = await getForecastWithFallback(3, true);
   return {
     items: res.items,
     byDay: res.by_day,
@@ -445,8 +541,71 @@ export async function getCalendar(source?: string, daysAhead = 120, daysBack = 3
   );
 }
 
-export async function getWorldCupCalendar() {
-  return fetchJson<WorldCupCalendar>("/api/v1/fixtures/world-cup", 30_000);
+async function buildWorldCupCalendarFromGeneralCalendar(): Promise<WorldCupCalendar> {
+  const cal = await getCalendar(undefined, 120, 30);
+  const by_date: CalendarDay[] = [];
+  let total = 0;
+  for (const day of cal.days) {
+    const upcoming = day.upcoming.filter(isWorldCupFixture);
+    const finished = day.finished.filter(isWorldCupFixture);
+    if (upcoming.length === 0 && finished.length === 0) continue;
+    by_date.push({ date: day.date, upcoming, finished });
+    total += upcoming.length + finished.length;
+  }
+  return {
+    tournament: "FIFA World Cup",
+    season: 2026,
+    from: cal.from,
+    to: cal.to,
+    total_matches: total,
+    phases: [],
+    by_date,
+    bracket: [],
+    sync_hint:
+      "Calendario desde /fixtures/calendar (fallback: /world-cup no respondio a tiempo).",
+  };
+}
+
+export function clearWorldCupCalendarCache(): void {
+  wcCalCache = null;
+}
+
+const WC_FAST_FALLBACK_MS = 12_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Calendario del Mundial. Cache 5 min.
+ * Si /world-cup tarda mas de 12s, responde con calendario general (sin error).
+ */
+export async function getWorldCupCalendar(options?: { force?: boolean }): Promise<WorldCupCalendar> {
+  const force = options?.force ?? false;
+  if (!force && wcCalCache && Date.now() - wcCalCache.at < WC_CAL_CACHE_TTL_MS) {
+    return wcCalCache.data;
+  }
+
+  const fullPromise = fetchJson<WorldCupCalendar>(
+    "/api/v1/fixtures/world-cup",
+    90_000,
+  ).then((data) => ({ data, fallback: false as const }));
+
+  const fastPromise = sleep(WC_FAST_FALLBACK_MS).then(async () => ({
+    data: await buildWorldCupCalendarFromGeneralCalendar(),
+    fallback: true as const,
+  }));
+
+  let result: WorldCupCalendar;
+  try {
+    const winner = await Promise.race([fullPromise, fastPromise]);
+    result = winner.data;
+  } catch {
+    result = await buildWorldCupCalendarFromGeneralCalendar();
+  }
+
+  wcCalCache = { at: Date.now(), data: result };
+  return result;
 }
 
 export async function syncWorldCup() {
@@ -826,6 +985,91 @@ export async function getBettingOutrights() {
   return fetchJson<BettingOutrightsResponse>("/api/v1/betting/outrights", 60_000);
 }
 
+export type TournamentSimMatch = {
+  code: string;
+  home: string;
+  away: string;
+  winner: string;
+  loser: string;
+  score: string;
+  homeWinProb?: number;
+  date?: string;
+  match_id?: number;
+  from_calendar?: boolean;
+};
+
+export type TournamentGroupStanding = {
+  team: string;
+  played?: number;
+  pts: number;
+  gf: number;
+  ga: number;
+  gd: number;
+  qualified: boolean;
+};
+
+export type TournamentGroupPhase = {
+  group: string;
+  label: string;
+  teams: string[];
+  standings: TournamentGroupStanding[];
+  matches: TournamentSimMatch[];
+};
+
+export type TournamentPlayerAchievement = {
+  id: string;
+  title: string;
+  subtitle: string;
+  player: string;
+  team: string;
+  icon: string;
+  probability: number;
+  stat: string;
+  tier: "gold" | "silver" | "bronze" | "special";
+};
+
+export type TournamentSimulationResponse = {
+  status: string;
+  message?: string;
+  seed?: number;
+  tournament?: string;
+  methodology?: string;
+  champion: string;
+  runnerUp: string;
+  phases: Array<{
+    id: string;
+    label: string;
+    shortLabel: string;
+    qualifiers?: string[];
+    matches?: TournamentSimMatch[];
+    groups?: TournamentGroupPhase[];
+  }>;
+  bracket: Array<{
+    id: string;
+    label: string;
+    shortLabel: string;
+    matches: TournamentSimMatch[];
+  }>;
+  groupAllTeams: string[];
+  groupQualifiers: string[];
+  groupEliminated: string[];
+  groups?: TournamentGroupPhase[];
+  playerAchievements: TournamentPlayerAchievement[];
+  squads_with_real_names?: number;
+  calendar_groups_loaded?: number;
+  calendar_matches_total?: number;
+  calendar_matches_used?: number;
+  disclaimer?: string;
+};
+
+export async function getTournamentSimulation(seed?: number) {
+  const q = seed != null ? `?seed=${seed}` : "";
+  return fetchJson<TournamentSimulationResponse>(
+    `/api/v1/simulation/tournament${q}`,
+    120_000,
+  );
+}
+
 export async function getBettingMatchBestCombo(matchId: number, maxLegs = 8) {
   return fetchJson<BettingMatchComboResponse>(
     `/api/v1/betting/match/${matchId}/best-combo?max_legs=${maxLegs}`,
@@ -954,6 +1198,70 @@ export async function evaluateBettingSlip(body: {
     "POST",
     body,
   );
+}
+
+// --- Admin jobs (cargas pesadas vía gateway Symfony) ---
+
+export type AdminJobMeta = {
+  id: string;
+  label: string;
+  console: string;
+  http: string;
+};
+
+export type AdminJobsListResponse = {
+  jobs: AdminJobMeta[];
+};
+
+export type AdminJobResult = {
+  ok: boolean;
+  job?: string;
+  module?: string;
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+};
+
+const JOB_TIMEOUT_MS = 600_000;
+
+export async function getAdminJobs() {
+  return fetchJson<AdminJobsListResponse>("/api/v1/admin/jobs", 15_000);
+}
+
+export async function runAdminJob(jobId: string) {
+  return fetchJson<AdminJobResult>(
+    `/api/v1/admin/jobs/${jobId}`,
+    JOB_TIMEOUT_MS,
+    "POST",
+  );
+}
+
+/** Carga paralela de las fuentes principales de pronósticos. */
+export async function loadAllPredictions(days = 7) {
+  const [home, forecast, pick, interesting, bettingPick, safeCombo] =
+    await Promise.allSettled([
+      getHomePredictions(days),
+      getForecast(3),
+      getPickOfDay(),
+      getInterestingMatch(days),
+      getBettingPickOfDay(5),
+      getBettingSafeCombo(0.6, 8),
+    ]);
+
+  return {
+    home: home.status === "fulfilled" ? home.value : null,
+    forecast: forecast.status === "fulfilled" ? forecast.value : null,
+    pick: pick.status === "fulfilled" ? pick.value : null,
+    interesting:
+      interesting.status === "fulfilled" ? interesting.value : null,
+    bettingPick: bettingPick.status === "fulfilled" ? bettingPick.value : null,
+    safeCombo: safeCombo.status === "fulfilled" ? safeCombo.value : null,
+    errors: [
+      home.status === "rejected" ? String(home.reason) : null,
+      forecast.status === "rejected" ? String(forecast.reason) : null,
+    ].filter(Boolean) as string[],
+  };
 }
 
 export { API_URL, API_FALLBACK };

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { ErrorAlert } from "../components/ErrorAlert";
 import {
+  clearWorldCupCalendarCache,
   getWorldCupCalendar,
   syncWorldCup,
   type FixtureItem,
@@ -54,11 +56,11 @@ export function CalendarPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true);
     setError(null);
     try {
-      setData(await getWorldCupCalendar());
+      setData(await getWorldCupCalendar({ force }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error");
       setData(null);
@@ -76,10 +78,11 @@ export function CalendarPage() {
     setSyncMsg(null);
     try {
       const res = await syncWorldCup();
+      clearWorldCupCalendarCache();
       setSyncMsg(
         `Sincronizado: ${res.fixtures_fetched ?? 0} partidos (${res.inserted ?? 0} nuevos, ${res.updated ?? 0} actualizados)`,
       );
-      await load();
+      await load(true);
     } catch (e) {
       setSyncMsg(e instanceof Error ? e.message : "Error al sincronizar");
     } finally {
@@ -90,43 +93,34 @@ export function CalendarPage() {
   const groupPhase = data?.phases.find((p) => p.id === "GROUP_STAGE");
 
   return (
-    <div className="page wc-page">
-      <header className="page-head row">
-        <div>
-          <span className="page-badge">Mundial 2026</span>
-          <h1>Calendario — Copa del Mundo</h1>
-          <p>
-            Fase de grupos (A–L), todas las fechas y cuadro eliminatorio con cruces
-            posibles. Datos vía football-data.org (WC).
-          </p>
+    <div className="page page--calendar">
+      <header className="page-hero">
+        <span className="wc-badge">Mundial 2026</span>
+        <h1>Calendario</h1>
+        <p className="muted">
+          Grupos A–L, fechas y eliminatoria.
           {data && data.total_matches > 0 && (
-            <p className="muted wc-meta">
-              {data.total_matches} partidos · {data.from} → {data.to}
-            </p>
+            <> · {data.total_matches} partidos ({data.from} → {data.to})</>
           )}
-        </div>
-        <div className="page-actions">
+        </p>
+        <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <button
             type="button"
-            className="btn-refresh"
+            className="btn btn-primary"
             onClick={handleSync}
             disabled={syncing || loading}
           >
-            {syncing ? "Sincronizando…" : "↻ Sincronizar Mundial"}
+            {syncing ? "Sincronizando…" : "Sincronizar Mundial"}
           </button>
-          <button type="button" className="btn-refresh" onClick={load} disabled={loading}>
-            Actualizar vista
+          <button type="button" className="btn" onClick={() => void load()} disabled={loading}>
+            Actualizar
           </button>
         </div>
       </header>
 
       {syncMsg && <div className="banner">{syncMsg}</div>}
-      {error && <div className="alert">{error}</div>}
-      {data?.sync_hint && !error && (
-        <div className="alert subtle">
-          <p>{data.sync_hint}</p>
-        </div>
-      )}
+      {error && <ErrorAlert error={error} />}
+      {data?.sync_hint && !error && <div className="banner">{data.sync_hint}</div>}
       {loading && <p className="muted loading-dots">Cargando Mundial</p>}
 
       {!loading && data && (
